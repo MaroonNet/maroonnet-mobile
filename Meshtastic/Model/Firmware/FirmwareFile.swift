@@ -1,0 +1,387 @@
+//
+//  FirmwareFile.swift
+//  Meshtastic
+//
+//  Created by jake on 12/13/25.
+//
+
+import Foundation
+import OSLog
+import SwiftUI
+@preconcurrency import SwiftData
+
+extension FirmwareFile {
+	enum FirmwareFileError: Error, LocalizedError {
+		case invalidFilenamePrefix
+		case parseError
+		case unknownFileType
+		case unknownTarget
+		case unknownArchitecture
+		case unknownVersion
+		case unknownReleaseType
+		case unknownRemoteURL
+		
+		var errorDescription: String? {
+			switch self {
+			case .invalidFilenamePrefix:
+				return "Filename must start with `firmware-`."
+			case .parseError:
+				return "Unable to parse the components of the filename (target and version)."
+			case .unknownFileType:
+				return "Unknown file type.  May not be a firmware file."
+			case .unknownTarget:
+				return "Unknown platformio target."
+			case .unknownArchitecture:
+				return "Unknown architecture."
+			case .unknownVersion:
+				return "Unknown version."
+			case .unknownReleaseType:
+				return "Unknown release type (stable/alpha)."
+			case .unknownRemoteURL:
+				return "Unknown remote URL."
+			}
+		}
+	}
+}
+
+// Various Enums and constants
+extension FirmwareFile {
+	enum DownloadStatus: Equatable {
+		case notDownloaded
+		case downloading
+		case downloaded
+		/// The release has no artifact for this board's target — it predates the board.
+		case unavailable
+		case error(String)
+	}
+	
+	enum FirmwareType: String, Identifiable, CustomStringConvertible {
+        var id: String { rawValue }
+		var description: String { return rawValue }
+		
+		case uf2 = ".uf2"
+		case bin = ".bin"
+		case otaZip = "-ota.zip"
+	}
+	
+	static let localFirmwareStorageURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+	static let remoteFirmwareURLPrefix = URL(string: "https://raw.githubusercontent.com/meshtastic/meshtastic.github.io/master/")!
+}
+
+class FirmwareFile: ObservableObject, Hashable, Equatable {
+	let localUrl: URL
+	let remoteUrl: URL?
+	/// Remote artifact URLs to try in order: region/locale-tagged variants
+	/// first (when the node's LoRa region prefers localized-font firmware),
+	/// generic artifact last. `remoteUrl` is the first candidate.
+	let remoteUrlCandidates: [URL]
+	let versionId: String
+	let platformioTarget: String
+	let releaseType: ReleaseType
+	@Published var status: DownloadStatus
+	/// One availability probe per file; the rows are rebuilt on every list refresh.
+	private var hasCheckedAvailability = false
+	let firmwareType: FirmwareType
+	let architecture: Architecture
+	let releaseNotes: String?
+	
+	let versionMajor, versionMinor, versionPatch: Int
+	
+	init(
+		firmware: FirmwareReleaseEntity,
+		hardware: DeviceHardwareEntity,
+		platformioTarget: String? = nil,
+		type: FirmwareType? = nil,
+		localeTags: [String] = []
+	) throws {
+		// Keep artifact identity separate from fallback hardware metadata. A flavor target such as
+		// `thinknode_m1-inkhud` must never silently become the catalog's `thinknode_m1` target.
+		guard let target = platformioTarget ?? hardware.platformioTarget, !target.isEmpty else {
+			throw FirmwareFileError.unknownTarget
+		}
+		self.platformioTarget = target
+
+		guard let architecture = hardware.architecture.flatMap({ Architecture(rawValue: $0) }) else {
+			throw FirmwareFileError.unknownArchitecture
+		}
+		self.architecture = architecture
+		
+		// Get the version from the given FirmwareReleaseEntity
+		let version = firmware.versionId
+		let releaseType = firmware.releaseType.flatMap { ReleaseType(rawValue: $0) }
+		let releaseNotes = firmware.releaseNotes
+		
+		self.releaseNotes = releaseNotes
+		
+		guard !version.isEmpty else { throw FirmwareFileError.unknownVersion }
+		self.versionId = version
+		
+		let cleanString = version.hasPrefix("v") ? version.dropFirst() : Substring(version)
+		let parts = cleanString.split(separator: ".")
+		if parts.count >= 3 {
+			self.versionMajor = Int(parts[0]) ?? 0
+			self.versionMinor = Int(parts[1]) ?? 0
+			self.versionPatch = Int(parts[2]) ?? 0
+		} else {
+			throw FirmwareFileError.parseError
+		}
+		
+		guard let releaseType else { throw FirmwareFileError.unknownReleaseType }
+		self.releaseType = releaseType
+		
+		// Calculate the filename
+		guard let defaultFileType = FirmwareFile.validFilenameSuffixes(forArchitecture: architecture).first else {
+			throw FirmwareFileError.unknownArchitecture
+		}
+		self.firmwareType = type ?? defaultFileType
+		let fileNameVersion = versionId.hasPrefix("v") ? String(versionId.dropFirst()) : versionId
+		let fileName = "firmware-\(target)-\(fileNameVersion)\(firmwareType)"
+		self.localUrl = FirmwareFile.localFirmwareStorageURL.appendingPathComponent(fileName)
+		// Tagged releases get a directory per version; the nightly is one fixed directory
+		// that each build overwrites.
+		let directoryName = releaseType == .nightly ? "firmware-nightly" : "firmware-\(fileNameVersion)"
+		self.remoteUrlCandidates = Self.makeRemoteURLCandidates(
+			directoryName: directoryName,
+			target: target,
+			version: fileNameVersion,
+			firmwareType: firmwareType,
+			localeTags: localeTags
+		)
+		self.remoteUrl = self.remoteUrlCandidates.first
+
+		if FileManager.default.fileExists(atPath: localUrl.path) {
+			self.status = .downloaded
+		} else {
+			self.status = .notDownloaded
+		}
+	}
+	
+	@MainActor
+	init(localFile url: URL, fallbackArchitecture: Architecture? = nil) throws {
+		self.localUrl = url
+		
+		let fileName = url.lastPathComponent
+		
+		// Check Prefix
+		guard fileName.hasPrefix("firmware-") else {
+			throw FirmwareFileError.invalidFilenamePrefix
+		}
+		
+		// Check and Strip Suffix (Extension)
+		// We strip the prefix and suffix first to isolate "<target>-<version>"
+		var coreName = String(fileName.dropFirst("firmware-".count))
+		
+		if fileName.hasSuffix("-ota.zip") {
+			coreName = String(coreName.dropLast("-ota.zip".count))
+			self.firmwareType = .otaZip
+		} else if fileName.hasSuffix(".uf2") {
+			coreName = String(coreName.dropLast(".uf2".count))
+			self.firmwareType = .uf2
+		} else if fileName.hasSuffix(".bin") {
+			coreName = String(coreName.dropLast(".bin".count))
+			self.firmwareType = .bin
+		} else {
+			// File does not match supported extensions
+			throw FirmwareFileError.unknownFileType
+		}
+		
+		// Extract Target and Version
+		// Strategy: We assume the format is Target-Version.
+		// Since Targets can have hyphens (e.g. "esp32-s3"), but Versions usually don't contain
+		// the separating hyphen in this specific naming convention, we split by the *last* hyphen.
+		guard let lastHyphenIndex = coreName.lastIndex(of: "-") else {
+			throw FirmwareFileError.parseError
+		}
+		
+		let target = String(coreName[..<lastHyphenIndex])
+		var version = String(coreName[coreName.index(after: lastHyphenIndex)...])
+		
+		let cleanString = version.hasPrefix("v") ? version.dropFirst() : Substring(version)
+		let parts = cleanString.split(separator: ".")
+		if parts.count >= 3 {
+			self.versionMajor = Int(parts[0]) ?? 0
+			self.versionMinor = Int(parts[1]) ?? 0
+			self.versionPatch = Int(parts[2]) ?? 0
+		} else {
+			throw FirmwareFileError.parseError
+		}
+		
+		if !version.hasPrefix("v") {
+			version = "v" + version
+		}
+		
+		// Validation to ensure we didn't end up with empty strings
+		guard !target.isEmpty, !version.isEmpty else {
+			throw FirmwareFileError.parseError
+		}
+		
+		self.versionId = version
+		self.platformioTarget = target
+		
+		if FileManager.default.fileExists(atPath: url.path) {
+			self.status = .downloaded
+		} else {
+			self.status = .notDownloaded
+		}
+		
+		// Look up the architecture for this file
+		let context = PersistenceController.shared.container.mainContext
+		var hardwareDescriptor = FetchDescriptor<DeviceHardwareEntity>(
+			predicate: #Predicate { $0.platformioTarget == target }
+		)
+		hardwareDescriptor.fetchLimit = 1
+		let hardwareResult: DeviceHardwareEntity?
+		do {
+			hardwareResult = try context.fetch(hardwareDescriptor).first
+		} catch {
+			Logger.data.error("Failed to fetch DeviceHardwareEntity for target \(target): \(error.localizedDescription)")
+			throw FirmwareFileError.unknownArchitecture
+		}
+		let architecture = hardwareResult?.architecture.flatMap { Architecture(rawValue: $0) }
+			?? fallbackArchitecture
+
+		guard let architecture else { throw FirmwareFileError.unknownArchitecture }
+		self.architecture = architecture
+		
+		// Determine release type
+		var releaseType: ReleaseType = .unlisted
+		var releaseNotes: String?
+		var firmwareDescriptor = FetchDescriptor<FirmwareReleaseEntity>(
+			predicate: #Predicate { $0.versionId == version }
+		)
+		firmwareDescriptor.fetchLimit = 1
+		do {
+			if let firmware = try context.fetch(firmwareDescriptor).first {
+				releaseType = firmware.releaseType.flatMap { ReleaseType(rawValue: $0) } ?? .unlisted
+				releaseNotes = firmware.releaseNotes
+			}
+		} catch {
+			Logger.data.error("Failed to fetch FirmwareReleaseEntity for version \(version): \(error.localizedDescription)")
+		}
+		self.releaseType = releaseType
+		self.releaseNotes = releaseNotes
+		
+		let fileNameVersion = versionId.hasPrefix("v") ? String(versionId.dropFirst()) : versionId
+		self.remoteUrl = FirmwareFile.remoteFirmwareURLPrefix
+			.appendingPathComponent("firmware-\(fileNameVersion)")
+			.appendingPathComponent(fileName)
+		self.remoteUrlCandidates = [self.remoteUrl].compactMap { $0 }
+	}
+	
+	/// Ask whether this release actually ships a build for the board's target, so a
+	/// release older than the board reads as unavailable instead of offering a download
+	/// that 404s. Checks every candidate the download would try, and only calls the
+	/// release unavailable when all of them are missing — a locale variant on its own is
+	/// still a build. Anything other than a clean 404 leaves the download on offer.
+	@MainActor
+	func checkAvailability() async {
+		guard !hasCheckedAvailability, status == .notDownloaded,
+		      !remoteUrlCandidates.isEmpty else { return }
+		hasCheckedAvailability = true
+		for candidateRemoteUrl in remoteUrlCandidates {
+			var request = URLRequest(url: candidateRemoteUrl)
+			request.httpMethod = "HEAD"
+			guard let (_, response) = try? await URLSession.shared.data(for: request),
+			      let httpResponse = response as? HTTPURLResponse else { return }
+			if httpResponse.statusCode != 404 { return }
+		}
+		status = .unavailable
+	}
+
+	@MainActor
+	func download() async throws {
+		guard !remoteUrlCandidates.isEmpty else {
+			throw FirmwareFileError.unknownRemoteURL
+		}
+
+		// Try each candidate in order (locale-tagged variants first, generic
+		// last); a release without a locale variant 404s and falls through.
+		var lastError: Error?
+		var missingCandidates = 0
+		for candidateRemoteUrl in remoteUrlCandidates {
+			try Task.checkCancellation()
+			do {
+				let (tempLocalUrl, response) = try await URLSession.shared.download(from: candidateRemoteUrl)
+
+				if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+					if httpResponse.statusCode == 404 {
+						missingCandidates += 1
+					}
+					throw URLError(.badServerResponse)
+				}
+
+				if FileManager.default.fileExists(atPath: localUrl.path) {
+					try FileManager.default.removeItem(at: localUrl)
+				}
+
+				try FileManager.default.moveItem(at: tempLocalUrl, to: localUrl)
+				self.status = .downloaded
+				return
+			} catch let urlError as URLError where urlError.code == .cancelled {
+				throw urlError
+			} catch {
+				lastError = error
+			}
+		}
+
+		try? FileManager.default.removeItem(at: localUrl)
+		let finalError = lastError ?? URLError(.badServerResponse)
+		// Every candidate 404ing means this release has no build for the board, which is
+		// not a download failure — releases older than the board never will have one.
+		self.status = missingCandidates == remoteUrlCandidates.count ? .unavailable : .error(finalError.localizedDescription)
+		throw finalError
+	}
+	
+	static func validFilenameSuffixes(forArchitecture: Architecture) -> [FirmwareType] {
+		switch forArchitecture {
+		case .esp32, .esp32C3, .esp32S3, .esp32C6:
+			return [.bin]
+		case .nrf52840:
+			return [.uf2, .otaZip]
+		case .rp2040:
+			return [.uf2]
+		}
+	}
+	
+	static func == (lhs: FirmwareFile, rhs: FirmwareFile) -> Bool {
+		return lhs.localUrl == rhs.localUrl &&
+			   lhs.remoteUrl == rhs.remoteUrl &&
+			   lhs.versionId == rhs.versionId &&
+			   lhs.platformioTarget == rhs.platformioTarget &&
+			   lhs.releaseType == rhs.releaseType &&
+			   lhs.firmwareType == rhs.firmwareType &&
+			   lhs.architecture == rhs.architecture
+	}
+
+	func hash(into hasher: inout Hasher) {
+		hasher.combine(localUrl)
+		hasher.combine(remoteUrl)
+		hasher.combine(versionId)
+		hasher.combine(platformioTarget)
+		hasher.combine(releaseType)
+		hasher.combine(firmwareType)
+		hasher.combine(architecture)
+	}
+
+	private static func makeRemoteURLCandidates(
+		directoryName: String,
+		target: String,
+		version: String,
+		firmwareType: FirmwareType,
+		localeTags: [String]
+	) -> [URL] {
+		let directory = remoteFirmwareURLPrefix.appendingPathComponent(directoryName)
+		var fileNames: [String] = []
+		var seen = Set<String>()
+		func append(_ value: String) {
+			guard !seen.contains(value) else { return }
+			seen.insert(value)
+			fileNames.append(value)
+		}
+		for tag in localeTags where !tag.isEmpty {
+			append("firmware-\(target)-\(version)-\(tag)\(firmwareType.rawValue)")
+		}
+		append("firmware-\(target)-\(version)\(firmwareType.rawValue)")
+		return fileNames.map { directory.appendingPathComponent($0) }
+	}
+}

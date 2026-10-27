@@ -1,0 +1,398 @@
+import Foundation
+import MapKit
+import SwiftUI
+import CoreLocation
+import OSLog
+
+// MARK: - Raw GeoJSON Support Only
+
+struct GeoJSONFeatureCollection: Codable {
+	let type: String // Always "FeatureCollection"
+	let features: [GeoJSONFeature]
+}
+
+struct GeoJSONFeature: Codable {
+	let type: String // Always "Feature"
+	let id: Int?
+	let geometry: GeoJSONGeometry
+	let properties: [String: AnyCodableValue]?
+
+	// MARK: - GeoJSON Styling Properties
+
+	/// Extract feature name from properties, defaulting to empty string
+	var name: String {
+		// Check for "NAME" first (uppercase), then "name" (lowercase)
+		if case .string(let value) = properties?["NAME"] {
+			return value
+		}
+		if case .string(let value) = properties?["name"] {
+			return value
+		}
+		return ""
+	}
+
+	/// Extract layer metadata from properties
+	var layerId: String? {
+		if case .string(let value) = properties?["layer_id"] {
+			return value
+		}
+		return nil
+	}
+
+	var layerName: String? {
+		if case .string(let value) = properties?["layer_name"] {
+			return value
+		}
+		return nil
+	}
+
+	var layerDescription: String? {
+		if case .string(let value) = properties?["description"] {
+			return value
+		}
+		return nil
+	}
+
+	var isVisible: Bool {
+		if case .bool(let value) = properties?["visible"] {
+			return value
+		}
+		return true // Default to visible
+	}
+
+	// MARK: - Point/Marker Styling
+
+	var markerColor: String? {
+		if case .string(let value) = properties?["marker-color"] {
+			return value
+		}
+		return nil
+	}
+
+	var markerSize: String? {
+		if case .string(let value) = properties?["marker-size"] {
+			return value
+		}
+		return "medium" // Default size
+	}
+
+	var markerSymbol: String? {
+		if case .string(let value) = properties?["marker-symbol"] {
+			return value
+		}
+		return nil
+	}
+
+	// MARK: - Stroke/Line Styling
+
+	var strokeColor: String? {
+		if case .string(let value) = properties?["stroke"] {
+			return value
+		}
+		return nil
+	}
+
+	var strokeWidth: Double {
+		if case .double(let value) = properties?["stroke-width"] {
+			return value
+		} else if case .int(let value) = properties?["stroke-width"] {
+			return Double(value)
+		}
+		return 1.0 // Default width
+	}
+
+	var strokeOpacity: Double {
+		if case .double(let value) = properties?["stroke-opacity"] {
+			return value
+		} else if case .int(let value) = properties?["stroke-opacity"] {
+			return Double(value)
+		}
+		return 1.0 // Default opacity
+	}
+
+	var lineDashArray: [Double]? {
+		if case .array(let values) = properties?["line-dasharray"] {
+			return values.compactMap { value in
+				switch value {
+				case .double(let d): return d
+				case .int(let i): return Double(i)
+				default: return nil
+				}
+			}
+		}
+		return nil
+	}
+
+	// MARK: - Fill Styling
+
+	var fillColor: String? {
+		if case .string(let value) = properties?["fill"] {
+			return value
+		}
+		return nil
+	}
+
+	var fillOpacity: Double {
+		if case .double(let value) = properties?["fill-opacity"] {
+			return value
+		} else if case .int(let value) = properties?["fill-opacity"] {
+			return Double(value)
+		}
+		return 0.0 // Default to no fill
+	}
+
+	// MARK: - Computed Rendering Properties
+
+	/// A generic `color` property, used by some producers (e.g. the Meshtastic Site Planner's coverage
+	/// export) instead of the simplestyle `fill`/`stroke` keys. Fallback for both stroke and fill.
+	var color: String? {
+		if case .string(let value) = properties?["color"] {
+			return value
+		}
+		return nil
+	}
+
+	/// Get effective stroke color (falls back to `color`, then marker color).
+	var effectiveStrokeColor: String {
+		return strokeColor ?? color ?? markerColor ?? "#000000"
+	}
+
+	/// Get effective fill color (falls back to `color`, then the stroke color).
+	var effectiveFillColor: String {
+		return fillColor ?? color ?? effectiveStrokeColor
+	}
+
+	/// True when `fill-opacity` was explicitly provided in the feature's properties.
+	private var hasExplicitFillOpacity: Bool {
+		if case .double = properties?["fill-opacity"] { return true }
+		if case .int = properties?["fill-opacity"] { return true }
+		return false
+	}
+
+	/// Fill opacity to render with. Honors an explicit `fill-opacity` (including `0` for "no fill");
+	/// otherwise, when the feature carries a fill/`color`, defaults to a visible value so colored
+	/// polygons (e.g. coverage contours) actually fill instead of rendering as bare outlines.
+	var effectiveFillOpacity: Double {
+		if hasExplicitFillOpacity { return fillOpacity }
+		return (fillColor != nil || color != nil) ? 0.35 : 0.0
+	}
+
+	/// Convert marker size to point radius
+	var markerRadius: CGFloat {
+		switch markerSize {
+		case "small": return 4.0
+		case "medium": return 8.0
+		case "large": return 12.0
+		default: return 4.0
+		}
+	}
+
+	/// Coordinates to draw as map markers. A Point yields one coordinate; a MultiPoint yields
+	/// one per sub-coordinate. Empty for every other geometry type (those render as overlays).
+	var markerCoordinates: [CLLocationCoordinate2D] {
+		switch geometry.type.lowercased() {
+		case "point":
+			return geometry.coordinates.toCoordinate().map { [$0] } ?? []
+		case "multipoint":
+			return geometry.coordinates.toCoordinates()
+		default:
+			return []
+		}
+	}
+}
+
+// MARK: - Styled Feature Wrapper
+
+/// Wrapper for a GeoJSON feature with its styling properties and metadata
+struct GeoJSONStyledFeature: Identifiable {
+	let id = UUID()
+	let feature: GeoJSONFeature
+	let overlayId: String
+	/// MKOverlay pre-computed once at init — avoids repeated JSONSerialization + MKGeoJSONDecoder
+	/// calls on every map render pass.
+	let precomputedOverlay: MKOverlay?
+
+	init(feature: GeoJSONFeature, overlayId: String) {
+		self.feature = feature
+		self.overlayId = overlayId
+		// Call the static helper after all stored properties are assigned so `self` is available
+		// for the instance — but we don't actually need self here, so this is safe.
+		self.precomputedOverlay = GeoJSONStyledFeature.makeOverlay(for: feature)
+	}
+
+	/// Builds an MKOverlay from a GeoJSON feature. Static so it can be called from init.
+	private static func makeOverlay(for feature: GeoJSONFeature) -> MKOverlay? {
+		// Point/MultiPoint geometries render as map annotations (markers), not overlays —
+		// MKGeoJSONDecoder returns an MKPointAnnotation (not an MKOverlay) for them, so running them
+		// through the overlay path below logged a spurious "no valid MKOverlay geometry" error for
+		// every point. Skip them silently; they're drawn via the annotation path (#1970).
+		let geometryType = feature.geometry.type.lowercased()
+		guard geometryType != "point", geometryType != "multipoint" else { return nil }
+
+		let featureDict: [String: Any] = [
+			"type": feature.type,
+			"geometry": [
+				"type": feature.geometry.type,
+				"coordinates": feature.geometry.coordinates.toAnyObject()
+			],
+			"properties": feature.properties?.mapValues { $0.toAnyObject() } ?? [:]
+		]
+
+		do {
+			let geojsonData = try JSONSerialization.data(withJSONObject: featureDict)
+			let mkFeatures = try MKGeoJSONDecoder().decode(geojsonData)
+			if let mkFeature = mkFeatures.first as? MKGeoJSONFeature,
+			   let geometry = mkFeature.geometry.first as? MKOverlay {
+				return geometry
+			} else {
+				Logger.services.error("🗺️ GeoJSONStyledFeature: Failed to create overlay - no valid MKOverlay geometry.")
+			}
+		} catch {
+			Logger.services.error("🗺️ GeoJSONStyledFeature: Failed to build overlay: \(error.localizedDescription)")
+		}
+		return nil
+	}
+
+	/// Returns the pre-computed overlay. Retained for API compatibility.
+	func createOverlay() -> MKOverlay? { precomputedOverlay }
+
+	/// Get stroke style for this feature
+	var strokeStyle: StrokeStyle {
+		let dashArray = feature.lineDashArray
+		if let dashArray = dashArray, !dashArray.isEmpty {
+			return StrokeStyle(
+				lineWidth: feature.strokeWidth,
+				lineCap: .round,
+				lineJoin: .round,
+				dash: dashArray.map { CGFloat($0) }
+			)
+		} else {
+			return StrokeStyle(
+				lineWidth: feature.strokeWidth,
+				lineCap: .round,
+				lineJoin: .round
+			)
+		}
+	}
+
+	/// Get stroke color with opacity
+	var strokeColor: Color {
+		return Color(css: feature.effectiveStrokeColor).opacity(feature.strokeOpacity)
+	}
+
+	/// Get fill color with opacity
+	var fillColor: Color {
+		return Color(css: feature.effectiveFillColor).opacity(feature.effectiveFillOpacity)
+	}
+}
+
+struct GeoJSONGeometry: Codable {
+	let type: String // "Point", "LineString", "Polygon", etc.
+	let coordinates: AnyCodableValue // Flexible coordinate structure
+}
+
+// MARK: - Flexible JSON Value Type
+
+enum AnyCodableValue: Codable {
+	case string(String)
+	case int(Int)
+	case double(Double)
+	case bool(Bool)
+	case array([AnyCodableValue])
+	case object([String: AnyCodableValue])
+	case null
+
+	init(from decoder: Decoder) throws {
+		let container = try decoder.singleValueContainer()
+
+		if container.decodeNil() {
+			self = .null
+		} else if let value = try? container.decode(Bool.self) {
+			self = .bool(value)
+		} else if let value = try? container.decode(Int.self) {
+			self = .int(value)
+		} else if let value = try? container.decode(Double.self) {
+			self = .double(value)
+		} else if let value = try? container.decode(String.self) {
+			self = .string(value)
+		} else if let value = try? container.decode([AnyCodableValue].self) {
+			self = .array(value)
+		} else if let value = try? container.decode([String: AnyCodableValue].self) {
+			self = .object(value)
+		} else {
+			throw DecodingError.typeMismatch(AnyCodableValue.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unable to decode AnyCodableValue"))
+		}
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var container = encoder.singleValueContainer()
+
+		switch self {
+		case .null:
+			try container.encodeNil()
+		case .bool(let value):
+			try container.encode(value)
+		case .int(let value):
+			try container.encode(value)
+		case .double(let value):
+			try container.encode(value)
+		case .string(let value):
+			try container.encode(value)
+		case .array(let value):
+			try container.encode(value)
+		case .object(let value):
+			try container.encode(value)
+		}
+	}
+
+	// Helper to convert coordinates to the format expected by MKGeoJSONDecoder
+	func toAnyObject() -> Any {
+		switch self {
+		case .null:
+			return NSNull()
+		case .bool(let value):
+			return value
+		case .int(let value):
+			return value
+		case .double(let value):
+			return value
+		case .string(let value):
+			return value
+		case .array(let values):
+			return values.map { $0.toAnyObject() }
+		case .object(let dict):
+			return dict.mapValues { $0.toAnyObject() }
+		}
+	}
+
+	// Helper to convert Point coordinates to CLLocationCoordinate2D
+	func toCoordinate() -> CLLocationCoordinate2D? {
+		if case .array(let coords) = self,
+		   coords.count >= 2 {
+			let lon: Double
+			let lat: Double
+
+			switch coords[0] {
+			case .double(let d): lon = d
+			case .int(let i): lon = Double(i)
+			default: return nil
+			}
+
+			switch coords[1] {
+			case .double(let d): lat = d
+			case .int(let i): lat = Double(i)
+			default: return nil
+			}
+
+			return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+		}
+		return nil
+	}
+
+	/// Convert a MultiPoint-style array of [lon, lat] pairs to coordinates.
+	/// Malformed entries are skipped rather than failing the whole set.
+	func toCoordinates() -> [CLLocationCoordinate2D] {
+		guard case .array(let items) = self else { return [] }
+		return items.compactMap { $0.toCoordinate() }
+	}
+}

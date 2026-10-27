@@ -1,0 +1,319 @@
+//
+//  UserDefaults.swift
+//  Meshtastic
+//
+//  Copyright(c) Garth Vander Houwen 4/24/23.
+//
+
+import Foundation
+import OSLog
+
+@propertyWrapper
+struct UserDefault<T: Decodable> {
+	let key: UserDefaults.Keys
+	let defaultValue: T
+
+	init(_ key: UserDefaults.Keys, defaultValue: T) {
+		self.key = key
+		self.defaultValue = defaultValue
+	}
+
+	var wrappedValue: T {
+		get {
+			if defaultValue is any RawRepresentable {
+				let storedValue = UserDefaults.standard.object(forKey: key.rawValue)
+
+				guard let storedValue,
+				let jsonString = (storedValue is String) ? "\"\(storedValue)\"" : "\(storedValue)",
+				let data = jsonString.data(using: .utf8),
+				let value = (try? JSONDecoder().decode(T.self, from: data)) else { return defaultValue }
+
+				return value
+			}
+
+			return UserDefaults.standard.object(forKey: key.rawValue) as? T ?? defaultValue
+		}
+		set {
+			UserDefaults.standard.set((newValue as? any RawRepresentable)?.rawValue ?? newValue, forKey: key.rawValue)
+		}
+	}
+}
+
+extension UserDefaults {
+	enum Keys: String, CaseIterable {
+		case preferredPeripheralId
+		case preferredPeripheralNum
+		case provideLocation
+		case provideLocationInterval
+		case mapLayer
+		case enableMapWaypoints
+		case meshMapRecentering
+		case meshMapShowNodeHistory
+		case meshMapShowRouteLines
+		case enableMapConvexHull
+		case enableMapRecentering
+		case enableMapNodeHistoryPins
+		case enableMapRouteLines
+		case enableMapTraffic
+		case enableMapPointsOfInterest
+		case enableMapPreciseLocationsOnly
+		case enableOfflineMaps
+		case enableMapShowFavorites
+		case mapTileServer
+		case enableOverlayServer
+		case mapOverlayServer
+		case mapTilesAboveLabels
+		case mapUseLegacy
+		case enableDetectionNotifications
+		case detectionSensorRole
+		case enableSmartPosition
+		case newNodeNotifications
+		case nodeNotificationsAutoDisabledForEvent
+		case nodeNotificationsUserOverrideForEvent
+		case lowBatteryNotifications
+		case channelMessageNotifications
+		case waypointNotifications
+		case modemPreset
+		case firmwareVersion
+		case hardwareModel
+		case environmentEnableWeatherKit
+		case enableAdministration
+		case mapReportingOptIn
+		case firstLaunch
+		case showDeviceOnboarding
+		case usageDataAndCrashReporting
+		case autoconnectOnDiscovery
+		case purgeStaleNodeDays
+		case manualConnections
+		case testIntEnum
+		case testDoubleValue
+		case lastDeviceAPIUpdate
+		case lastDeviceImageAndLinkUpdate
+		case lastFirmwareAPIUpdate
+		case firmwareUpdateNotificationKeys
+		case lastEventFirmwareAPIUpdate
+		case lastEventFirmwareAPIAttempt
+		case useEventTheme
+		case pairedPeripheralIds
+		case migratedPreferredPeripheralPairing
+	}
+
+	func reset() {
+		Keys.allCases.forEach { removeObject(forKey: $0.rawValue) }
+	}
+
+	@UserDefault(.preferredPeripheralId, defaultValue: "")
+	static var preferredPeripheralId: String
+
+	@UserDefault(.preferredPeripheralNum, defaultValue: 0)
+	static var preferredPeripheralNum: Int
+
+	@UserDefault(.provideLocation, defaultValue: false)
+	static var provideLocation: Bool
+
+	@UserDefault(.provideLocationInterval, defaultValue: 30)
+	static var provideLocationInterval: Int
+
+	@UserDefault(.mapLayer, defaultValue: .standard)
+	static var mapLayer: MapLayer
+
+	@UserDefault(.enableMapWaypoints, defaultValue: true)
+	static var enableMapWaypoints: Bool
+
+	@UserDefault(.enableMapRecentering, defaultValue: false)
+	static var enableMapRecentering: Bool
+
+	@UserDefault(.enableMapNodeHistoryPins, defaultValue: false)
+	static var enableMapNodeHistoryPins: Bool
+
+	@UserDefault(.enableMapRouteLines, defaultValue: false)
+	static var enableMapRouteLines: Bool
+
+	@UserDefault(.enableMapConvexHull, defaultValue: false)
+	static var enableMapConvexHull: Bool
+
+	@UserDefault(.enableMapTraffic, defaultValue: false)
+	static var enableMapTraffic: Bool
+
+	@UserDefault(.enableMapPointsOfInterest, defaultValue: false)
+	static var enableMapPointsOfInterest: Bool
+
+	@UserDefault(.enableMapPreciseLocationsOnly, defaultValue: false)
+	static var enableMapPreciseLocationsOnly: Bool
+
+	@UserDefault(.enableMapShowFavorites, defaultValue: false)
+	static var enableMapShowFavorites: Bool
+
+	@UserDefault(.enableDetectionNotifications, defaultValue: false)
+	static var enableDetectionNotifications: Bool
+
+	@UserDefault(.detectionSensorRole, defaultValue: .sensor)
+	static var detectionSensorRole: DetectionSensorRole
+
+	@UserDefault(.enableSmartPosition, defaultValue: false)
+	static var enableSmartPosition: Bool
+
+	@UserDefault(.channelMessageNotifications, defaultValue: true)
+	static var channelMessageNotifications: Bool
+
+
+	@UserDefault(.waypointNotifications, defaultValue: true)
+	static var waypointNotifications: Bool
+
+	@UserDefault(.newNodeNotifications, defaultValue: true)
+	static var newNodeNotifications: Bool
+
+	@UserDefault(.nodeNotificationsAutoDisabledForEvent, defaultValue: false)
+	static var nodeNotificationsAutoDisabledForEvent: Bool
+
+	@UserDefault(.nodeNotificationsUserOverrideForEvent, defaultValue: false)
+	static var nodeNotificationsUserOverrideForEvent: Bool
+
+	@UserDefault(.lowBatteryNotifications, defaultValue: true)
+	static var lowBatteryNotifications: Bool
+
+	@UserDefault(.modemPreset, defaultValue: 0)
+	static var modemPreset: Int
+
+	@UserDefault(.firmwareVersion, defaultValue: "0.0.0")
+	static var firmwareVersion: String
+
+	@UserDefault(.hardwareModel, defaultValue: "Unset")
+	static var hardwareModel: String
+
+	@UserDefault(.environmentEnableWeatherKit, defaultValue: true)
+	static var environmentEnableWeatherKit: Bool
+
+	@UserDefault(.enableAdministration, defaultValue: false)
+	static var enableAdministration: Bool
+
+	@UserDefault(.mapReportingOptIn, defaultValue: false)
+	static var mapReportingOptIn: Bool
+
+	@UserDefault(.usageDataAndCrashReporting, defaultValue: true)
+	static var usageDataAndCrashReporting: Bool
+
+	@UserDefault(.firstLaunch, defaultValue: true)
+	static var firstLaunch: Bool
+
+	@UserDefault(.showDeviceOnboarding, defaultValue: false)
+	static var showDeviceOnboarding: Bool
+
+	@UserDefault(.autoconnectOnDiscovery, defaultValue: true)
+	static var autoconnectOnDiscovery: Bool
+
+	@UserDefault(.purgeStaleNodeDays, defaultValue: 0)
+	static var purgeStaleNodeDays: Double
+
+	@UserDefault(.testIntEnum, defaultValue: .one)
+	static var testIntEnum: TestIntEnum
+
+	@UserDefault(.firmwareUpdateNotificationKeys, defaultValue: [])
+	static var firmwareUpdateNotificationKeys: [String]
+
+	static var firmwareUpdateNotificationKeySet: Set<String> {
+		Set(firmwareUpdateNotificationKeys)
+	}
+
+	static func recordFirmwareUpdateNotificationKey(_ key: String) {
+		var keys = firmwareUpdateNotificationKeySet
+		keys.insert(key)
+		firmwareUpdateNotificationKeys = keys.sorted()
+	}
+
+	/// UUIDs of BLE peripherals we have successfully bonded with (subscription to an
+	/// encrypted characteristic confirmed). Used only as a *hint*: on a first-ever
+	/// connection we allow a long window for the user to enter the pairing PIN, while
+	/// already-bonded peripherals keep the fast reconnect timeouts. Ground truth is
+	/// still the CoreBluetooth callbacks — a stale hint only affects the timeout length,
+	/// never correctness.
+	@UserDefault(.pairedPeripheralIds, defaultValue: [])
+	static var pairedPeripheralIds: [String]
+
+	static func isPairedPeripheral(_ id: UUID) -> Bool {
+		pairedPeripheralIds.contains(id.uuidString)
+	}
+
+	static func rememberPairedPeripheral(_ id: UUID) {
+		var ids = Set(pairedPeripheralIds)
+		guard ids.insert(id.uuidString).inserted else { return }
+		pairedPeripheralIds = ids.sorted()
+	}
+
+	static func forgetPairedPeripheral(_ id: UUID) {
+		var ids = Set(pairedPeripheralIds)
+		guard ids.remove(id.uuidString) != nil else { return }
+		pairedPeripheralIds = ids.sorted()
+	}
+
+	/// One-time flag: whether the legacy `preferredPeripheralId` has been migrated into
+	/// `pairedPeripheralIds`. Once set, the preferred-peripheral fallback is never consulted for
+	/// bonding decisions again, so a bond the user later removes can self-heal back to the long
+	/// pairing window instead of being pinned to the fast reconnect timeout.
+	@UserDefault(.migratedPreferredPeripheralPairing, defaultValue: false)
+	static var migratedPreferredPeripheralPairing: Bool
+	
+	static var manualConnections: [Device] {
+		get {
+			// Retrieve data from UserDefaults
+			guard let data = UserDefaults.standard.data(forKey: Keys.manualConnections.rawValue) else {
+				return []
+			}
+			
+			// Decode the Data back to [Device]
+			do {
+				let decoder = JSONDecoder()
+				let devices = try decoder.decode([Device].self, from: data)
+				return devices
+			} catch {
+				return []
+			}
+		}
+		set {
+			do {
+				// Encode the [Device] to Data
+				let encoder = JSONEncoder()
+				let data = try encoder.encode(newValue)
+				
+				// Store the Data in UserDefaults
+				UserDefaults.standard.set(data, forKey: Keys.manualConnections.rawValue)
+			} catch {
+				Logger.transport.error("💥 Failed to encode manualConnections: \(error, privacy: .public)")
+			}
+		}
+	}
+	@UserDefault(.lastDeviceAPIUpdate, defaultValue: .distantPast)
+	static var lastDeviceAPIUpdate: Date
+
+	/// When the device image + msh.to link network pass last completed. Throttles that pass (see
+	/// `MeshtasticAPI.staleDeviceImageLinkInterval`); reset to `.distantPast` by `clearDatabase`
+	/// so a database clear still forces a restore regardless of the throttle window.
+	///
+	/// Write through `DeviceImageLinkThrottle`, not directly: the refresh pass runs detached and a
+	/// clear can land mid-pass, so the two writers need the throttle's generation check to stop a
+	/// superseded pass from overwriting the clear's reset.
+	@UserDefault(.lastDeviceImageAndLinkUpdate, defaultValue: .distantPast)
+	static var lastDeviceImageAndLinkUpdate: Date
+
+	@UserDefault(.lastFirmwareAPIUpdate, defaultValue: .distantPast)
+	static var lastFirmwareAPIUpdate: Date
+
+	@UserDefault(.lastEventFirmwareAPIUpdate, defaultValue: .distantPast)
+	static var lastEventFirmwareAPIUpdate: Date
+
+	/// Last live-manifest refresh attempt, successful or not. This prevents an offline launch
+	/// loop from retrying the same first-party endpoint on every metadata lookup.
+	@UserDefault(.lastEventFirmwareAPIAttempt, defaultValue: .distantPast)
+	static var lastEventFirmwareAPIAttempt: Date
+
+	/// Whether event highlight colors are used across the app and edition fonts are used in the
+	/// event info sheet. Standard navigation backgrounds remain unchanged.
+	@UserDefault(.useEventTheme, defaultValue: true)
+	static var useEventTheme: Bool
+}
+
+enum TestIntEnum: Int, Decodable {
+	case one = 1
+	case two
+	case three
+}
