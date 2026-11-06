@@ -9,20 +9,23 @@ senior capstone, Fall 2026 – Spring 2027.
 
 ## What is here
 
-A new SwiftUI app, written from an empty Xcode project. A team member's iPhone pairs over
-Bluetooth to a Meshtastic radio; the app connects to that radio, shows the team's positions on
-a map, receives messages and information from the commander over the mesh, and keeps a
-timestamped log in a shape the MaroonNet mission database can use.
+A fork of the Meshtastic iOS app, Meshtastic-Apple **v2.7.21**, which MaroonNet builds on. A team
+member's iPhone pairs over Bluetooth to a Meshtastic radio; the app connects to that radio, shows
+the team's positions on a map, receives messages and search assignments from the commander over
+the mesh, and keeps a timestamped log in a shape the MaroonNet mission database can use.
+
+The team agreed to the fork in November 2026 on the advisor's advice, replacing the 2026-10-29
+fresh-start plan. MaroonNet's features are added on top of the Meshtastic app first; features
+MaroonNet does not need are trimmed later, one pull request at a time. The unmodified v2.7.21
+code is preserved at tag `meshtastic-v2.7.21-base`. The team does not track upstream Meshtastic.
 
 | Path | What it holds | Who to ask |
 |---|---|---|
-| `MaroonNetField/` | The Xcode project and the app's own code | Diego Alas |
-| `MeshtasticProtobufs/` | The Meshtastic message definitions, copied from the reference (arrives with the radio work) | Diego Alas |
-
-The app is **not** a fork of the Meshtastic app. Meshtastic-Apple v2.7.21 is a read-only
-reference kept outside this repository; only its radio transport and protobuf package are
-copied, file by file, and keep their GPL-3.0 headers. The verbatim copy that lived here before
-the 2026-10-29 fresh start is preserved at tag `meshtastic-v2.7.21-base`.
+| `Meshtastic/` | The app's code: Meshtastic's, plus MaroonNet's additions | Diego Alas |
+| `MeshtasticTests/` | Unit tests | Diego Alas |
+| `MeshtasticProtobufs/` | The Meshtastic message definitions as a Swift package | Diego Alas |
+| `protobufs/` | Git submodule with Meshtastic's raw `.proto` files | Diego Alas |
+| `project.yml` | XcodeGen spec; `Meshtastic.xcodeproj` is generated from it | Diego Alas |
 
 The main MaroonNet repository (command post, databases, modeling) is
 [MaroonNet/MaroonNet](https://github.com/MaroonNet/MaroonNet). The repository holds code;
@@ -50,13 +53,23 @@ gh ssh-key add ~/.ssh/id_ed25519.pub --type signing --title "<machine> signing"
 
 (Or GitHub → Settings → SSH and GPG keys → New SSH key → Key type **Signing Key**.)
 
-Building needs Xcode, an Apple Account on the MaroonNet team (ask Corey Greene for an
-invitation) and an iPhone; Bluetooth does not work in the Simulator.
+## Building
+
+1. After cloning, fetch the submodule once: `git submodule update --init`.
+2. Open `Meshtastic.xcworkspace` in Xcode (not the `.xcodeproj`) and let the Swift packages
+   resolve; that needs internet.
+3. To change targets or build settings, edit `project.yml` and regenerate with the XcodeGen
+   version pinned in `.xcodegen-version` (see `CONTRIBUTING.md`). Do not edit the project in
+   Xcode's settings screens; regenerating overwrites those changes.
+
+Building needs Xcode and an iPhone; Bluetooth does not work in the Simulator. Ask Diego how to
+sign a test build for your own iPhone.
 
 ## License
 
-GPL-3.0. See `LICENSE`. Code copied from Meshtastic-Apple is GPL-3.0 and keeps its copyright
-notices; the same license keeps MaroonNet compatible with the Meshtastic firmware and libraries.
+GPL-3.0. See `LICENSE`. The app is a fork of Meshtastic-Apple, which is GPL-3.0, and keeps its
+copyright notices; the same license keeps MaroonNet compatible with the Meshtastic firmware and
+libraries.
 
 ## Team
 

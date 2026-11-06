@@ -1,0 +1,554 @@
+import Foundation
+import MapKit
+import OSLog
+import Combine
+
+/// Manager for handling user-uploaded map data files
+class MapDataManager: ObservableObject {
+	static let shared = MapDataManager()
+	init() {}
+
+	// MARK: - Constants
+	private let maxFileSize: Int64 = 10 * 1024 * 1024 // 10MB
+	private let mapDataDirectory = "MapData"
+	private let userUploadedDirectory = "user_uploaded"
+	private let metadataFileName = "upload_history.json"
+
+	// MARK: - Properties
+	@Published private var uploadedFiles: [MapDataMetadata] = []
+	private var activeFeatureCollection: GeoJSONFeatureCollection?
+
+	// MARK: - File Management
+
+	/// Get the base URL for map data storage
+	private func getMapDataDirectory() -> URL? {
+		guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+			Logger.services.error("🗂️ Could not access documents directory")
+			return nil
+		}
+		return documentsURL.appendingPathComponent(mapDataDirectory)
+	}
+
+	/// Get the URL for user uploaded files
+	private func getUserUploadedDirectory() -> URL? {
+		guard let baseURL = getMapDataDirectory() else { return nil }
+		return baseURL.appendingPathComponent(userUploadedDirectory)
+	}
+
+	/// Get the URL for metadata file
+	private func getMetadataFileURL() -> URL? {
+		guard let baseURL = getMapDataDirectory() else { return nil }
+		return baseURL.appendingPathComponent(metadataFileName)
+	}
+
+	/// Create necessary directories
+	private func createDirectoriesIfNeeded() -> Bool {
+		guard let userDir = getUserUploadedDirectory() else { return false }
+
+		do {
+			try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
+			return true
+		} catch {
+			Logger.services.error("🗂️ Failed to create directories: \(error.localizedDescription, privacy: .public)")
+			return false
+		}
+	}
+
+	// MARK: - File Upload & Processing
+
+	/// Process and store an uploaded file
+	func processUploadedFile(from sourceURL: URL, source: MapDataSource = .manualUpload) async throws -> MapDataMetadata {
+
+		// 1. Start accessing security-scoped resource
+		let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+		defer {
+			if isAccessing {
+				sourceURL.stopAccessingSecurityScopedResource()
+			}
+		}
+
+		// 2. Validate file
+		try validateFile(at: sourceURL)
+
+		// 2. Create directories if needed
+		guard createDirectoriesIfNeeded() else {
+			throw MapDataError.directoryCreationFailed
+		}
+
+		// 3. Generate destination filename
+		let timestamp = Date().timeIntervalSince1970
+		let originalName = sourceURL.deletingPathExtension().lastPathComponent
+		let fileExtension = sourceURL.pathExtension
+		let newFilename = "\(originalName)_\(Int(timestamp)).\(fileExtension)"
+
+		guard let destURL = getUserUploadedDirectory()?.appendingPathComponent(newFilename) else {
+			throw MapDataError.invalidDestination
+		}
+
+		// 4. Copy file to app storage
+		try FileManager.default.copyItem(at: sourceURL, to: destURL)
+
+		// 5. Process and validate content
+		let metadata = try await processFileContent(at: destURL, originalName: originalName, source: source)
+
+		// 6. Save metadata and update UI on main thread
+		await MainActor.run {
+			uploadedFiles.append(metadata)
+			// A new Site Planner run replaces the previous one on the map: only the
+			// newest planner file stays active. Manual uploads are never touched —
+			// their visibility belongs to the user.
+			if metadata.source == .sitePlanner {
+				for index in uploadedFiles.indices
+				where uploadedFiles[index].source == .sitePlanner && uploadedFiles[index].id != metadata.id {
+					uploadedFiles[index].isActive = false
+				}
+			}
+			// Clear cached configuration to force reload
+			activeFeatureCollection = nil
+		}
+		try saveMetadata()
+
+		return metadata
+	}
+
+	/// Imports an in-memory GeoJSON string (e.g. the coverage `FeatureCollection` handed back by
+	/// the Site Planner's native bridge) through the same pipeline as `processUploadedFile`, so it
+	/// reuses the exact validation + render + styling path with no round-trip to the share sheet.
+	/// `name` becomes the on-disk file / layer name; a `.geojson` extension is enforced.
+	func importFromString(_ geoJSON: String, name: String, source: MapDataSource = .manualUpload) async throws -> MapDataMetadata {
+		guard let data = geoJSON.data(using: .utf8) else {
+			throw MapDataError.invalidContent
+		}
+		guard data.count <= maxFileSize else {
+			throw MapDataError.fileTooLarge
+		}
+
+		// Sanitise the caller-supplied name into a safe single path component and enforce `.geojson`.
+		let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+		let base = trimmed.isEmpty ? "coverage" : trimmed
+		let safeBase = base
+			.components(separatedBy: CharacterSet(charactersIn: "/\\:\n\r\t"))
+			.joined(separator: "-")
+		let fileName = safeBase.lowercased().hasSuffix(".geojson") ? safeBase : "\(safeBase).geojson"
+
+		let tempURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString)
+			.appendingPathComponent(fileName)
+		try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+		try data.write(to: tempURL)
+		defer { try? FileManager.default.removeItem(at: tempURL) }
+
+		return try await processUploadedFile(from: tempURL, source: source)
+	}
+
+	/// Validate uploaded file
+	private func validateFile(at url: URL) throws {
+		let fileAttributes = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+
+		// Check file size
+		guard let fileSize = fileAttributes.fileSize, fileSize <= maxFileSize else {
+			throw MapDataError.fileTooLarge
+		}
+
+		// Check if it's a regular file
+		guard fileAttributes.isRegularFile == true else {
+			throw MapDataError.invalidFileType
+		}
+
+		// Check file extension
+		let allowedExtensions = ["json", "geojson"]
+		let fileExtension = url.pathExtension.lowercased()
+		guard allowedExtensions.contains(fileExtension) else {
+			throw MapDataError.unsupportedFormat
+		}
+	}
+
+	/// Process file content and extract metadata
+	private func processFileContent(at url: URL, originalName: String, source: MapDataSource) async throws -> MapDataMetadata {
+		let fileAttributes = try url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey])
+		let fileSize = fileAttributes.fileSize ?? 0
+		let uploadDate = fileAttributes.creationDate ?? Date()
+
+		// Read and process file content on background queue
+		let (data, overlayCount) = try await withCheckedThrowingContinuation { continuation in
+			Task.detached {
+				do {
+					let data = try Data(contentsOf: url)
+					let overlayCount = try self.getOverlayCount(from: data)
+					continuation.resume(returning: (data, overlayCount))
+				} catch {
+					continuation.resume(throwing: error)
+				}
+			}
+		}
+
+		// Validate GeoJSON schema
+		let jsonObject = try JSONSerialization.jsonObject(with: data, options: [])
+		guard let geoJSON = jsonObject as? [String: Any] else {
+			throw NSError(domain: "MapDataManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid GeoJSON format"])
+		}
+
+		// Check required properties
+		guard let type = geoJSON["type"] as? String, type == "FeatureCollection",
+			  let features = geoJSON["features"] as? [[String: Any]] else {
+			throw NSError(domain: "MapDataManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "GeoJSON must be a FeatureCollection with features"])
+		}
+
+		// Validate each feature
+		for feature in features {
+			guard let geometry = feature["geometry"] as? [String: Any],
+				  let coordinates = geometry["coordinates"] as? [Any],
+				  let geometryType = geometry["type"] as? String else {
+				throw NSError(domain: "MapDataManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid feature structure in GeoJSON"])
+			}
+		}
+
+		return MapDataMetadata(
+			filename: url.lastPathComponent,
+			originalName: originalName,
+			uploadDate: uploadDate,
+			fileSize: Int64(fileSize),
+			format: url.pathExtension.lowercased(),
+			license: nil, // Will be extracted from content if available
+			attribution: nil, // Will be extracted from content if available
+			overlayCount: overlayCount,
+			// New files start visible: a coverage run replaces the previous one
+			// (older planner files are deactivated by the caller), and a manual
+			// upload shows immediately with its visibility toggle in the user's hands.
+			isActive: true,
+			source: source
+		)
+	}
+
+	/// Get overlay count from raw GeoJSON data
+	private func getOverlayCount(from data: Data) throws -> Int {
+		// Parse as raw GeoJSON FeatureCollection
+		if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+		   let features = json["features"] as? [[String: Any]] {
+			return features.count
+		}
+		throw MapDataError.invalidContent
+	}
+
+	/// Load feature collection from a single file
+	private func loadFeatureCollectionFromFile(_ file: MapDataMetadata) throws -> GeoJSONFeatureCollection? {
+		guard let fileURL = getUserUploadedDirectory()?.appendingPathComponent(file.filename) else {
+			throw MapDataError.fileNotFound
+		}
+
+		let data = try Data(contentsOf: fileURL)
+		return try JSONDecoder().decode(GeoJSONFeatureCollection.self, from: data)
+	}
+
+	// MARK: - Configuration Loading
+
+	/// Load combined feature collection from specific files
+	func loadFeatureCollectionForFiles(_ files: [MapDataMetadata]) -> GeoJSONFeatureCollection? {
+		guard !files.isEmpty else {
+			return nil
+		}
+
+		var allFeatures: [GeoJSONFeature] = []
+
+		for file in files {
+			do {
+				if let featureCollection = try loadFeatureCollectionFromFile(file) {
+					allFeatures.append(contentsOf: featureCollection.features)
+				}
+			} catch {
+				Logger.services.error("📁 MapDataManager: Failed to load feature collection from \(file.filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+				continue
+			}
+		}
+
+		guard !allFeatures.isEmpty else {
+			return nil
+		}
+		return GeoJSONFeatureCollection(type: "FeatureCollection", features: allFeatures)
+	}
+
+	/// Load and combine raw GeoJSON feature collections from all active files
+	func loadFeatureCollection() -> GeoJSONFeatureCollection? {
+		if let cached = activeFeatureCollection {
+			return cached
+		}
+
+		// Find active user files
+		let activeFiles = uploadedFiles.filter { $0.isActive }
+
+		guard !activeFiles.isEmpty else {
+			return nil
+		}
+
+		var allFeatures: [GeoJSONFeature] = []
+
+		// Load features from all active files
+		for activeFile in activeFiles {
+
+			guard let fileURL = getUserUploadedDirectory()?.appendingPathComponent(activeFile.filename) else {
+				Logger.services.error("📁 MapDataManager: Could not construct file URL for: \(activeFile.filename, privacy: .public)")
+				continue
+			}
+
+			// Check if file exists before trying to load it
+			if !FileManager.default.fileExists(atPath: fileURL.path) {
+				Logger.services.error("📁 MapDataManager: Active file does not exist at path: \(fileURL.path, privacy: .public)")
+
+				// Remove the missing file from our metadata
+				if let index = uploadedFiles.firstIndex(where: { $0.filename == activeFile.filename }) {
+					uploadedFiles.remove(at: index)
+					do {
+						try saveMetadata()
+					} catch {
+						Logger.services.error("📁 MapDataManager: Failed to save cleaned metadata: \(error.localizedDescription, privacy: .public)")
+					}
+				}
+				continue
+			}
+
+			do {
+				let data = try Data(contentsOf: fileURL)
+				let featureCollection = try JSONDecoder().decode(GeoJSONFeatureCollection.self, from: data)
+
+				allFeatures.append(contentsOf: featureCollection.features)
+			} catch {
+				Logger.services.error("📁 MapDataManager: Failed to load feature collection from \(activeFile.filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+			}
+		}
+
+		// Create combined feature collection
+		let combinedCollection = GeoJSONFeatureCollection(
+			type: "FeatureCollection",
+			features: allFeatures
+		)
+
+		activeFeatureCollection = combinedCollection
+		return combinedCollection
+	}
+
+	// MARK: - File Management
+
+	/// Get all uploaded files
+	func getUploadedFiles() -> [MapDataMetadata] {
+		return uploadedFiles
+	}
+
+	/// Set the active state of an uploaded file explicitly (the settings toggles
+	/// persist through this, so visibility survives relaunch).
+	func setFileActive(_ fileId: UUID, _ isActive: Bool) {
+		guard let index = uploadedFiles.firstIndex(where: { $0.id == fileId }),
+			  uploadedFiles[index].isActive != isActive else { return }
+		let previous = uploadedFiles[index].isActive
+		uploadedFiles[index].isActive = isActive
+		do {
+			try saveMetadata()
+			activeFeatureCollection = nil
+		} catch {
+			// Revert so the session never shows a visibility the manifest does not
+			// hold — otherwise a relaunch would silently flip it back.
+			uploadedFiles[index].isActive = previous
+			Logger.services.error("🚨 MapDataManager: FAILED to save metadata after setting file active: \(error.localizedDescription)")
+		}
+	}
+
+	/// Toggle the active state of an uploaded file
+	func toggleFileActive(_ fileId: UUID) {
+		if let index = uploadedFiles.firstIndex(where: { $0.id == fileId }) {
+			uploadedFiles[index].isActive.toggle()
+
+			// Save metadata changes
+			do {
+				try saveMetadata()
+				// Clear cached data to force reload
+				activeFeatureCollection = nil
+			} catch {
+				Logger.services.error("🚨 MapDataManager: FAILED to save metadata after toggling file: \(error.localizedDescription)")
+			}
+		}
+	}
+
+	/// Delete uploaded file
+	func deleteFile(_ metadata: MapDataMetadata) async throws {
+
+		guard let fileURL = getUserUploadedDirectory()?.appendingPathComponent(metadata.filename) else {
+			Logger.services.error("🗑️ MapDataManager: Could not construct file URL for: \(metadata.filename, privacy: .public)")
+			throw MapDataError.fileNotFound
+		}
+
+		// Check if file exists before trying to delete
+		if !FileManager.default.fileExists(atPath: fileURL.path) {
+			Logger.services.warning("🗑️ MapDataManager: File does not exist at path: \(fileURL.path, privacy: .public)")
+		}
+
+		do {
+			try FileManager.default.removeItem(at: fileURL)
+		} catch {
+			Logger.services.error("🗑️ MapDataManager: Failed to remove file: \(error.localizedDescription, privacy: .public)")
+			throw error
+		}
+
+		// Update UI-related properties on main thread
+		await MainActor.run {
+			if let index = uploadedFiles.firstIndex(where: { $0.filename == metadata.filename }) {
+				uploadedFiles.remove(at: index)
+			} else {
+				Logger.services.warning("🗑️ MapDataManager: File not found in uploadedFiles array")
+			}
+		}
+
+		do {
+			try saveMetadata()
+		} catch {
+			Logger.services.error("🗑️ MapDataManager: Failed to save metadata: \(error.localizedDescription, privacy: .public)")
+			throw error
+		}
+
+		// Clear cache if this was the active file
+		await MainActor.run {
+			if activeFeatureCollection != nil {
+				activeFeatureCollection = nil
+			}
+		}
+
+		// Clear GeoJSON overlay manager cache
+		GeoJSONOverlayManager.shared.clearCache()
+
+		// Notify UI components that a file was deleted
+		await MainActor.run {
+			NotificationCenter.default.post(name: Foundation.Notification.Name.mapDataFileDeleted, object: metadata.id)
+		}
+
+	}
+
+	// MARK: - Metadata Persistence
+
+	/// Load metadata from disk
+	func loadMetadata() {
+		guard let metadataURL = getMetadataFileURL(),
+			  let data = try? Data(contentsOf: metadataURL),
+			  let files = try? JSONDecoder().decode([MapDataMetadata].self, from: data) else {
+			uploadedFiles = []
+			return
+		}
+
+		uploadedFiles = files
+	}
+
+	/// Save metadata to disk
+	private func saveMetadata() throws {
+		guard let metadataURL = getMetadataFileURL() else {
+			throw MapDataError.invalidDestination
+		}
+
+		let data = try JSONEncoder().encode(uploadedFiles)
+		try data.write(to: metadataURL)
+	}
+
+	// MARK: - Initialization
+
+	/// Initialize the manager
+	func initialize() {
+		loadMetadata()
+	}
+}
+
+// MARK: - Supporting Types
+
+/// Where a map data file came from. Site Planner coverage runs are managed
+/// automatically (only the newest stays active); manual uploads keep whatever
+/// visibility the user set.
+enum MapDataSource: String, Codable, Sendable {
+	case manualUpload
+	case sitePlanner
+}
+
+/// Metadata for uploaded map data files
+struct MapDataMetadata: Codable, Identifiable {
+	let id: UUID
+	let filename: String
+	let originalName: String
+	let uploadDate: Date
+	let fileSize: Int64
+	let format: String
+	let license: String?
+	let attribution: String?
+	let overlayCount: Int
+	var isActive: Bool
+	var source: MapDataSource
+
+	init(filename: String, originalName: String, uploadDate: Date, fileSize: Int64, format: String, license: String?, attribution: String?, overlayCount: Int, isActive: Bool, source: MapDataSource = .manualUpload) {
+		self.id = UUID()
+		self.filename = filename
+		self.originalName = originalName
+		self.uploadDate = uploadDate
+		self.fileSize = fileSize
+		self.format = format
+		self.license = license
+		self.attribution = attribution
+		self.overlayCount = overlayCount
+		self.isActive = isActive
+		self.source = source
+	}
+
+	/// Manifests written before `source` existed decode as manual uploads — every
+	/// file back then came from the file picker.
+	init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		id = try container.decode(UUID.self, forKey: .id)
+		filename = try container.decode(String.self, forKey: .filename)
+		originalName = try container.decode(String.self, forKey: .originalName)
+		uploadDate = try container.decode(Date.self, forKey: .uploadDate)
+		fileSize = try container.decode(Int64.self, forKey: .fileSize)
+		format = try container.decode(String.self, forKey: .format)
+		license = try container.decodeIfPresent(String.self, forKey: .license)
+		attribution = try container.decodeIfPresent(String.self, forKey: .attribution)
+		overlayCount = try container.decode(Int.self, forKey: .overlayCount)
+		isActive = try container.decode(Bool.self, forKey: .isActive)
+		source = try container.decodeIfPresent(MapDataSource.self, forKey: .source) ?? .manualUpload
+	}
+
+	var fileSizeString: String {
+		let formatter = ByteCountFormatter()
+		formatter.allowedUnits = [.useKB, .useMB]
+		formatter.countStyle = .file
+		return formatter.string(fromByteCount: fileSize)
+	}
+}
+
+/// Errors that can occur during map data operations
+enum MapDataError: Error, LocalizedError {
+	case fileTooLarge
+	case invalidFileType
+	case unsupportedFormat
+	case invalidContent
+	case directoryCreationFailed
+	case invalidDestination
+	case fileNotFound
+	case saveFailed
+
+	var errorDescription: String? {
+		switch self {
+		case .fileTooLarge:
+			return "File is too large. Maximum size is 10MB."
+		case .invalidFileType:
+			return "Invalid file type. Please select a regular file."
+		case .unsupportedFormat:
+			return "Unsupported file format. Supported formats: JSON, GeoJSON, KML, KMZ, GZ, ZLIB."
+		case .invalidContent:
+			return String(localized: "Invalid file content. Please check the file format.")
+		case .directoryCreationFailed:
+			return "Failed to create storage directory."
+		case .invalidDestination:
+			return "Invalid destination path."
+		case .fileNotFound:
+			return "File not found."
+		case .saveFailed:
+			return "Failed to save file."
+		}
+	}
+}
+
+// MARK: - Notification Names
+extension Foundation.Notification.Name {
+	static let mapDataFileDeleted = Foundation.Notification.Name("mapDataFileDeleted")
+}
