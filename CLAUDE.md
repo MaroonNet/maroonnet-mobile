@@ -13,18 +13,18 @@ Student prototype; not certified for life-safety use.
 
 ## What this repository is
 
-A new SwiftUI iOS app, written by the team from an empty Xcode project (2026-10-29 decision).
-It is **not** a fork of Meshtastic-Apple. Meshtastic-Apple v2.7.21 (GPL-3.0) is a read-only
-reference that lives outside this repository, in each teammate's `~/workspace/reference/`
-clone; only the radio transport layer and the protobuf package are copied from it, file by file,
-when a step calls for it. Everything else is MaroonNet's own code.
+A fork of Meshtastic-Apple **v2.7.21** (GPL-3.0), restored from tag `meshtastic-v2.7.21-base`.
+The team agreed to this in November 2026 on the advisor's advice; it replaces the 2026-10-29
+fresh-start plan. The plan: keep the Meshtastic app working, add what MaroonNet needs on top of
+it, and trim unneeded features only after MaroonNet's own features work.
 
-- App: `MaroonNetField` Xcode project at the repository root; display name "MaroonNet Field";
-  bundle ID `org.maroonnet.field`; built on Corey Greene's Apple Developer team.
-- The verbatim v2.7.21 copy that was here before the fresh start is kept at tag
-  `meshtastic-v2.7.21-base`. Nothing is taken from it; the reference clone is the source.
+- App: display name "MaroonNet Field"; bundle ID `org.maroonnet.field`; built on Corey Greene's
+  Apple Developer team; iPhone only; minimum iOS 17.5. Radios are assumed to run Meshtastic
+  firmware 2.7.x.
+- A read-only clone of upstream v2.7.21 lives outside this repository, in each teammate's
+  `~/workspace/reference/`, for comparing against the original. Nobody edits it.
 - The team does not track upstream Meshtastic. An upstream change comes in only as a deliberate
-  copy in its own pull request, named for what it adds.
+  cherry-pick in its own pull request, named for what it adds.
 
 ## Rules
 
@@ -51,15 +51,19 @@ when a step calls for it. Everything else is MaroonNet's own code.
 
 ## Working in this code base
 
-- GPL-3.0 stays. Every file copied from the reference keeps its copyright header, with one
-  comment line added under it: `// Copied from Meshtastic-Apple v2.7.21 (GPL-3.0): <original path>`.
-  Code the team writes carries no Meshtastic header.
-- Copy only what a step asks for. Do not copy folders "while you are there"; the Meshtastic UI,
-  data model, MQTT, TAK, firmware-update, CarPlay, Siri, widget, watch, TV and localization code
-  stay out.
-- Nobody edits the reference clone, and Claude never copies files into the repository itself.
-- The Xcode project file is hand-managed by Xcode (no XcodeGen, no `project.yml`). Open
-  `MaroonNetField/MaroonNetField.xcodeproj`.
+- GPL-3.0 stays. Keep `LICENSE` and the copyright notice at the top of every Meshtastic file
+  that stays. Code the team writes carries no Meshtastic header.
+- Add before you remove. Meshtastic features stay until MaroonNet's features work. Each later
+  removal is its own pull request that says what was removed and why in two sentences.
+- Out of scope for the capstone: the Watch, TV and Widgets targets; Mac Catalyst and iPad; the
+  CarPlay, Siri, NFC, critical-alert, WeatherKit and associated-domain entitlements. They are
+  removed or being removed; do not extend them or add them back.
+- `Meshtastic.xcodeproj` is generated from `project.yml` by XcodeGen (version pinned in
+  `.xcodegen-version`; see `CONTRIBUTING.md`) and is committed. Change `project.yml`,
+  regenerate, commit both; never hand-edit the project file. Open `Meshtastic.xcworkspace`.
+- `protobufs/` is a git submodule (`git submodule update --init` after a fresh clone).
+- This is the only instruction file for AI assistants here; Meshtastic's own Claude, Copilot
+  and spec-kit files were left out on purpose.
 - Bluetooth does not work in the Simulator; radio work is tested on a phone.
 - Teammates new to git or iOS get one step at a time; verify each step before the next.
 
