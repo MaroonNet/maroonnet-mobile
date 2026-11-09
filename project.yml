@@ -196,6 +196,8 @@ targets:
         type: syncedFolder
       - path: "Meshtastic/Intents"
         type: syncedFolder
+      - path: "Meshtastic/MaroonNet"
+        type: syncedFolder
       - path: "Meshtastic/Measurement"
         type: syncedFolder
       - path: "Meshtastic/Model"

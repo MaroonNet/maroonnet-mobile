@@ -409,6 +409,16 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
+		EAF16B3F9A033C3A3A8A07C3 /* MaroonNet */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			name = MaroonNet;
+			path = MaroonNet;
+			sourceTree = "<group>";
+		};
 		F7C2596BDB5FBBD06602EAAF /* Model */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			explicitFileTypes = {
@@ -497,6 +507,7 @@
 				A7443D3C9E82A023A4388EFC /* InfoPlist.strings */,
 				985D21086E966D40C875F3CD /* InfoPlist.strings */,
 				25C42CF0517289648017F9AA /* Intents */,
+				EAF16B3F9A033C3A3A8A07C3 /* MaroonNet */,
 				306AEE0BD7EDAF65F6E3B376 /* Measurement */,
 				4C621B0715362CE25600901D /* Meshtastic.xcdatamodeld */,
 				736C4EF819FC0D5D1A41F29F /* MeshtasticApp.swift */,
@@ -604,6 +615,7 @@
 				22FDA4B8722F2CC1F4B5A929 /* Helpers */,
 				1A7C0874097266C63EDD8A18 /* Import */,
 				25C42CF0517289648017F9AA /* Intents */,
+				EAF16B3F9A033C3A3A8A07C3 /* MaroonNet */,
 				306AEE0BD7EDAF65F6E3B376 /* Measurement */,
 				F7C2596BDB5FBBD06602EAAF /* Model */,
 				4E52FFD5347832FDB8575177 /* Persistence */,
