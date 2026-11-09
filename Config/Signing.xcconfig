@@ -1,0 +1,11 @@
+// MaroonNet: signing settings for MaroonNet Field.
+// These are the team's values (Corey Greene's Apple Developer team). A developer can
+// override them for test builds on their own iPhone in Config/Signing.local.xcconfig,
+// which git ignores.
+
+MAROONNET_TEAM = A4T2AF7QY8
+MAROONNET_BUNDLE_ID = org.maroonnet.field
+
+#include? "Signing.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(MAROONNET_TEAM)

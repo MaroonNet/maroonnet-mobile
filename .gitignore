@@ -99,3 +99,4 @@ marketing/
 # Stray xcodebuild output logs (never commit build logs)
 /build*.log
 *.xcuserstate
+Config/Signing.local.xcconfig

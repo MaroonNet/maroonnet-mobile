@@ -82,7 +82,6 @@ settings:
       CLANG_WARN__DUPLICATE_METHOD_MATCH: "YES"
       COPY_PHASE_STRIP: "NO"
       DEBUG_INFORMATION_FORMAT: "dwarf"
-      DEVELOPMENT_TEAM: "GCH7VS5Y9R"
       ENABLE_STRICT_OBJC_MSGSEND: "YES"
       ENABLE_TESTABILITY: "YES"
       ENABLE_USER_SCRIPT_SANDBOXING: "NO"
@@ -145,7 +144,6 @@ settings:
       CLANG_WARN__DUPLICATE_METHOD_MATCH: "YES"
       COPY_PHASE_STRIP: "NO"
       DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
-      DEVELOPMENT_TEAM: "GCH7VS5Y9R"
       ENABLE_NS_ASSERTIONS: "NO"
       ENABLE_STRICT_OBJC_MSGSEND: "YES"
       ENABLE_USER_SCRIPT_SANDBOXING: "YES"
@@ -174,6 +172,9 @@ targets:
   Meshtastic:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     sources:
       - path: "Meshtastic/API"
         type: syncedFolder
@@ -353,8 +354,6 @@ targets:
           ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: "YES"
           CLANG_ENABLE_MODULES: "YES"
           CODE_SIGN_ENTITLEMENTS: "Meshtastic/Meshtastic.entitlements"
-          CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: "Meshtastic/Meshtastic-Catalyst.entitlements"
-          CODE_SIGN_IDENTITY[sdk=macosx*]: "Apple Development"
           CODE_SIGN_STYLE: "Automatic"
           CURRENT_PROJECT_VERSION: "1"
           DEVELOPMENT_ASSET_PATHS: "\"Meshtastic/Preview Content\""
@@ -382,7 +381,7 @@ targets:
           OTHER_LDFLAGS:
             - "-weak_framework"
             - "SwiftUI"
-          PRODUCT_BUNDLE_IDENTIFIER: "gvh.MeshtasticClient"
+          PRODUCT_BUNDLE_IDENTIFIER: "$(MAROONNET_BUNDLE_ID)"
           PRODUCT_NAME: "$(TARGET_NAME)"
           SUPPORTS_MACCATALYST: "NO"
           SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
@@ -396,8 +395,6 @@ targets:
           ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: "YES"
           CLANG_ENABLE_MODULES: "YES"
           CODE_SIGN_ENTITLEMENTS: "Meshtastic/Meshtastic.entitlements"
-          CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: "Meshtastic/Meshtastic-Catalyst.entitlements"
-          CODE_SIGN_IDENTITY[sdk=macosx*]: "Apple Development"
           CODE_SIGN_STYLE: "Automatic"
           CURRENT_PROJECT_VERSION: "1"
           DEVELOPMENT_ASSET_PATHS: "\"Meshtastic/Preview Content\""
@@ -425,7 +422,7 @@ targets:
           OTHER_LDFLAGS:
             - "-weak_framework"
             - "SwiftUI"
-          PRODUCT_BUNDLE_IDENTIFIER: "gvh.MeshtasticClient"
+          PRODUCT_BUNDLE_IDENTIFIER: "$(MAROONNET_BUNDLE_ID)"
           PRODUCT_NAME: "$(TARGET_NAME)"
           SUPPORTS_MACCATALYST: "NO"
           SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
@@ -436,6 +433,9 @@ targets:
   MeshtasticTests:
     type: bundle.unit-test
     platform: iOS
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     sources:
       - path: "MeshtasticTests"
         type: syncedFolder
@@ -454,7 +454,7 @@ targets:
           GENERATE_INFOPLIST_FILE: "YES"
           IPHONEOS_DEPLOYMENT_TARGET: "17.5"
           MARKETING_VERSION: "1.0"
-          PRODUCT_BUNDLE_IDENTIFIER: "gvh.MeshtasticClient.MeshtasticTests"
+          PRODUCT_BUNDLE_IDENTIFIER: "$(MAROONNET_BUNDLE_ID).tests"
           PRODUCT_NAME: "$(TARGET_NAME)"
           SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
           SUPPORTS_MACCATALYST: "NO"
@@ -474,7 +474,7 @@ targets:
           GENERATE_INFOPLIST_FILE: "YES"
           IPHONEOS_DEPLOYMENT_TARGET: "17.5"
           MARKETING_VERSION: "1.0"
-          PRODUCT_BUNDLE_IDENTIFIER: "gvh.MeshtasticClient.MeshtasticTests"
+          PRODUCT_BUNDLE_IDENTIFIER: "$(MAROONNET_BUNDLE_ID).tests"
           PRODUCT_NAME: "$(TARGET_NAME)"
           SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
           SUPPORTS_MACCATALYST: "NO"

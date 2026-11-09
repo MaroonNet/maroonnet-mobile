@@ -584,30 +584,10 @@ struct DeviceOnboarding: View {
 		_ = await BluetoothAuthorizationHelper.requestBluetoothAuthorization()
 	}
 	
+	// MaroonNet: Siri is out of scope and the app has no Siri entitlement, so asking for
+	// Siri permission would crash. The onboarding Siri page stays for now (trim in Phase 10).
 	func requestSiriPermissions() async {
-		if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-			Logger.services.info("Skipping Siri permission request while running tests")
-			return
-		}
-
-		#if targetEnvironment(macCatalyst)
-		// Siri authorization prompt is not available on Mac Catalyst
-		Logger.services.info("Siri permissions not available on Mac Catalyst")
-		#else
-		await withCheckedContinuation { continuation in
-			INPreferences.requestSiriAuthorization { status in
-				switch status {
-				case .authorized:
-					Logger.services.info("Siri permissions are enabled")
-				case .denied:
-					Logger.services.info("Siri permissions denied")
-				default:
-					Logger.services.info("Siri permissions status: \(status.rawValue)")
-				}
-				continuation.resume()
-			}
-		}
-		#endif
+		Logger.services.info("Siri permissions skipped: not used by MaroonNet Field")
 	}
 
 }
