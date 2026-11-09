@@ -1,0 +1,320 @@
+//
+//  LocationsHandler.swift
+//  Meshtastic
+//
+//  Copyright Garth Vander Houwen 12/4/23.
+//
+
+import SwiftUI
+import CoreLocation
+import OSLog
+
+// The @MainActor annotation ensures that all state changes and UI updates happen on the main thread,
+// preventing potential race conditions and crashes related to UI updates from background threads.
+@MainActor class LocationsHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
+
+	static let shared = LocationsHandler()  // Create a single, shared instance of the object.
+	public var manager = CLLocationManager()
+	private var background: CLBackgroundActivitySession?
+	private var locationDeliveryStarted = false
+	var enableSmartPosition: Bool = UserDefaults.enableSmartPosition
+
+	@Published var locationsArray: [CLLocation] = [CLLocation]()
+	@Published var isStationary = false
+	@Published var count = 0
+	@Published var isRecording = false {
+		didSet { updateAccuracyForRecordingState() }
+	}
+	@Published var isRecordingPaused = false
+	@Published var recordingStarted: Date?
+	@Published var distanceTraveled = 0.0
+	@Published var elevationGain = 0.0
+	@Published var heading: Double = 0.0 // Current heading in degrees
+	@Published var headingUpdatesStarted: Bool = false // Track heading updates state
+
+	@Published
+	var updatesStarted: Bool = UserDefaults.standard.bool(forKey: "liveUpdatesStarted") {
+		didSet { UserDefaults.standard.set(updatesStarted, forKey: "liveUpdatesStarted") }
+	}
+
+	@Published
+	var backgroundActivity: Bool = UserDefaults.standard.bool(forKey: "BGActivitySessionStarted") {
+		didSet {
+			// Invalidate or create the background activity session based on the new value.
+			backgroundActivity ? self.background = CLBackgroundActivitySession() : self.background?.invalidate()
+			UserDefaults.standard.set(backgroundActivity, forKey: "BGActivitySessionStarted")
+		}
+	}
+
+	// The continuation we will use to asynchronously ask the user permission to track their location.
+	// This is an Optional to ensure it can be nilled out after use.
+	private var permissionContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
+
+	// A flag to prevent multiple concurrent permission requests
+	private var isRequestingPermission = false
+
+	/// Requests "Always" location authorization from the user.
+	/// This method uses Swift's structured concurrency to await the user's decision.
+	/// It includes a timeout to prevent continuation leaks if the delegate method isn't called.
+	/// - Returns: The `CLAuthorizationStatus` reflecting the user's choice.
+	func requestLocationAlwaysPermissions() async -> CLAuthorizationStatus {
+		// If a request is already in progress, return the current status immediately.
+		// This prevents creating multiple continuations and potential leaks.
+		guard !isRequestingPermission else {
+			Logger.services.debug("📍 [App] requestLocationAlwaysPermissions called while a request is already active. Returning current status.")
+			return manager.authorizationStatus
+		}
+		// Set flag to indicate a request is in progress
+		isRequestingPermission = true
+
+		return await withCheckedContinuation { continuation in
+			// Store the continuation.
+			self.permissionContinuation = continuation
+
+			// Request authorization. The response will come via `locationManagerDidChangeAuthorization`.
+			manager.requestAlwaysAuthorization()
+
+			// Add a timeout to ensure the continuation is always resumed.
+			// If the delegate method doesn't fire within a reasonable time (e.g., 10 seconds),
+			// we'll resume the continuation with .notDetermined to prevent a leak.
+			Task { @MainActor in // Ensure this task runs on the MainActor
+				do {
+					try await Task.sleep(for: .seconds(5)) // Wait for 5 seconds
+					if let currentContinuation = self.permissionContinuation {
+						// If the continuation hasn't been nilled out yet, it means
+						// locationManagerDidChangeAuthorization hasn't been called.
+						Logger.services.warning("📍 [App] Location permission request timed out. Resuming continuation with .notDetermined.")
+						currentContinuation.resume(returning: .denied)
+						self.permissionContinuation = nil // Clear the reference
+					}
+				} catch is CancellationError {
+					// This task was cancelled, likely because the main continuation was already resumed
+					// by locationManagerDidChangeAuthorization. This is expected and safe.
+					Logger.services.debug("📍 [App] Permission timeout task cancelled.")
+				} catch {
+					Logger.services.error("💥 [App] Error in permission timeout task: \(error.localizedDescription, privacy: .public)")
+				}
+			}
+		}
+		// This defer block ensures `isRequestingPermission` is reset and `permissionContinuation` is nilled out
+		// regardless of how the `withCheckedContinuation` block exits (success, error, or cancellation).
+		// It acts as a final cleanup mechanism.
+		defer {
+			self.isRequestingPermission = false
+			// This nil assignment is somewhat redundant with the one in locationManagerDidChangeAuthorization
+			// and the timeout Task, but it provides an extra layer of safety.
+			self.permissionContinuation = nil
+		}
+	}
+
+	/// Delegate method called when the location authorization status changes.
+	/// - Parameter manager: The CLLocationManager instance.
+	func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+		// Ensure the continuation exists before attempting to resume it.
+		// If it's nil, it means either no request was pending or it was already resumed (e.g., by the timeout).
+		guard let continuation = permissionContinuation else {
+			Logger.services.debug("📍 [App] locationManagerDidChangeAuthorization called but no permissionContinuation is active or it was already handled.")
+			return
+		}
+		// Resume the continuation with the current authorization status.
+		continuation.resume(returning: manager.authorizationStatus)
+		// CRUCIAL: Nil out the continuation immediately after resuming it.
+		// This prevents attempting to resume the same continuation multiple times,
+		// which would lead to a runtime crash.
+		self.permissionContinuation = nil
+		self.isRequestingPermission = false // Reset the flag as the request has completed
+	}
+
+	override init() {
+		super.init()
+		self.manager.delegate = self
+		// Allow background location updates for continuous tracking.
+		self.manager.allowsBackgroundLocationUpdates = true
+		// Set desired accuracy for location updates.
+		// Use HundredMeters by default to save battery; escalate to Best during route recording.
+		self.manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+		// Only deliver updates when the device has moved at least 10 meters.
+		self.manager.distanceFilter = 10
+		if CLLocationManager.headingAvailable() {
+				self.manager.headingFilter = 1 // Update heading when it changes by 1 degree
+				self.manager.headingOrientation = .portrait // Adjust based on device orientation
+			}
+	}
+
+	func startLocationUpdates() {
+		let status = self.manager.authorizationStatus
+		// Guard against starting updates without proper authorization.
+		guard status == .authorizedAlways || status == .authorizedWhenInUse else {
+			Logger.services.warning("📍 [App] Cannot start location updates: insufficient authorization status: \(status.rawValue)")
+			return
+		}
+		guard !locationDeliveryStarted else { return }
+		Logger.services.info("📍 [App] Starting location updates")
+		updatesStarted = true
+		beginLocationDelivery()
+	}
+
+	func beginLocationDelivery() {
+		locationDeliveryStarted = true
+		manager.startUpdatingLocation()
+	}
+
+	// New method to start heading updates
+	func startHeadingUpdates() {
+		guard CLLocationManager.headingAvailable() else {
+			Logger.services.warning("📍 [App] Heading updates not available on this device.")
+			return
+		}
+
+		guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else {
+			Logger.services.warning("📍 [App] Cannot start heading updates: insufficient authorization status.")
+			return
+		}
+
+		Logger.services.info("📍 [App] Starting heading updates")
+		manager.startUpdatingHeading()
+		headingUpdatesStarted = true
+	}
+
+	// New method to stop heading updates
+	func stopHeadingUpdates() {
+		Logger.services.info("🛑 [App] Stopping heading updates")
+		manager.stopUpdatingHeading()
+		headingUpdatesStarted = false
+	}
+
+	// Implement the CLLocationManagerDelegate method for heading updates
+	func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+		// Update heading on the main thread
+		Task { @MainActor in
+			self.heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+		}
+	}
+
+	func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+		Task { @MainActor in
+			guard self.updatesStarted else { return }
+			for location in locations {
+				self.recordLocation(location, isStationary: false)
+			}
+		}
+	}
+
+	/// Stops receiving live location updates.
+	func stopLocationUpdates() {
+		Logger.services.info("🛑 [App] Stopping location updates")
+		self.updatesStarted = false
+		self.locationDeliveryStarted = false
+		self.manager.stopUpdatingLocation()
+	}
+
+	private func recordLocation(_ location: CLLocation, isStationary: Bool) {
+		self.isStationary = isStationary
+		let locationAdded = addLocation(location, smartPostion: enableSmartPosition)
+		if !isRecording && locationAdded {
+			self.count = 1
+		} else if locationAdded && isRecording {
+			self.count += 1
+		}
+	}
+
+	/// Escalates to best accuracy during route recording; reverts to battery-friendly defaults otherwise.
+	private func updateAccuracyForRecordingState() {
+		if isRecording {
+			manager.desiredAccuracy = kCLLocationAccuracyBest
+			manager.distanceFilter = kCLDistanceFilterNone
+		} else {
+			manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+			manager.distanceFilter = 10
+		}
+	}
+
+	/// Adds a location to the array and updates tracking metrics, applying smart position filters if enabled.
+	/// - Parameters:
+	///   - location: The `CLLocation` object to add.
+	///   - smartPostion: A boolean indicating whether to apply smart position filtering.
+	/// - Returns: `true` if the location was added, `false` if it was filtered out by smart position.
+	func addLocation(_ location: CLLocation, smartPostion: Bool) -> Bool {
+		if smartPostion {
+			let age = -location.timestamp.timeIntervalSinceNow
+			if age > 10 {
+				Logger.services.info("📍 [App] Smart Position - Bad Location: Too Old \(age, privacy: .public) seconds ago \(location, privacy: .private(mask: .none))")
+				return false
+			}
+			if location.horizontalAccuracy < 0 {
+				Logger.services.info("📍 [App] Smart Position - Bad Location: Horizontal Accuracy: \(location.horizontalAccuracy) \(location, privacy: .private(mask: .none))")
+				return false
+			}
+			// Consider adjusting this threshold based on your needs. 5 meters is quite strict.
+			if location.horizontalAccuracy > 5 {
+				Logger.services.info("📍 [App] Smart Position - Bad Location: Horizontal Accuracy: \(location.horizontalAccuracy) \(location, privacy: .private(mask: .none))")
+				return false
+			}
+		}
+		if isRecording {
+			if let lastLocation = locationsArray.last {
+				let distance = location.distance(from: lastLocation)
+				let gain = location.altitude - lastLocation.altitude
+				distanceTraveled += distance
+				if gain > 0 {
+					elevationGain += gain
+				}
+			}
+			locationsArray.append(location)
+		} else {
+			// If not recording, only keep the latest location.
+			locationsArray = [location]
+		}
+		return true
+	}
+	// Default location (Apple Park) used as a fallback.
+	// nonisolated because it is never mutated
+	nonisolated static let DefaultLocation = CLLocationCoordinate2D(latitude: 37.3346, longitude: -122.0090)
+	/// Provides the current location, falling back to last known or a default if necessary.
+	static var currentLocation: CLLocationCoordinate2D? {
+		// Attempt to get the most recent location from the manager.
+		if let location = shared.manager.location {
+			return location.coordinate
+		} else {
+			return nil
+		}
+	}
+	/// Returns the current location only when it is valid and precise enough
+	/// for distance-based filtering (horizontal accuracy ≤ 100 m and not stale).
+	static var currentPreciseLocation: CLLocationCoordinate2D? {
+		guard let location = shared.manager.location else { return nil }
+		// Reject invalid accuracy
+		guard location.horizontalAccuracy >= 0,
+			  location.horizontalAccuracy <= 100 else { return nil }
+		// Reject stale locations (older than 10 minutes)
+		guard location.timestamp.timeIntervalSinceNow > -600 else { return nil }
+		return location.coordinate
+	}
+	/// Estimates the number of satellites in view based on horizontal and vertical accuracy.
+	/// This is a heuristic and not a direct report of satellite count.
+	static var satsInView: Int {
+		var sats = 0
+		if let newLocation = shared.locationsArray.last {
+			sats = 1
+			if newLocation.verticalAccuracy > 0 {
+				sats = 4
+				if 0...5 ~= newLocation.horizontalAccuracy {
+					sats = 12
+				} else if 6...15 ~= newLocation.horizontalAccuracy {
+					sats = 10
+				} else if 16...30 ~= newLocation.horizontalAccuracy {
+					sats = 9
+				} else if 31...45 ~= newLocation.horizontalAccuracy {
+					sats = 7
+				} else if 46...60 ~= newLocation.horizontalAccuracy {
+					sats = 5
+				}
+			} else if newLocation.verticalAccuracy < 0 && 60...300 ~= newLocation.horizontalAccuracy {
+				sats = 3
+			} else if newLocation.verticalAccuracy < 0 && newLocation.horizontalAccuracy > 300 {
+				sats = 2
+			}
+		}
+		return sats
+	}
+}
