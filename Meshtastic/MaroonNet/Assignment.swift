@@ -33,7 +33,14 @@ struct Assignment: Identifiable {
 /// the old one (agreed with the command post, assignment packet record point 6).
 @MainActor @Observable
 final class AssignmentStore {
-	static let shared = AssignmentStore()
+	static let shared: AssignmentStore = {
+		let store = AssignmentStore()
+		#if DEBUG
+		// Test builds start with a demo area, so the map and banner can be tried without a radio.
+		store.receive(.demo)
+		#endif
+		return store
+	}()
 
 	/// Every assignment received, by ID.
 	private(set) var assignments: [Int: Assignment] = [:]
