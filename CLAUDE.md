@@ -56,8 +56,13 @@ it, and trim unneeded features only after MaroonNet's own features work.
 - Add before you remove. Meshtastic features stay until MaroonNet's features work. Each later
   removal is its own pull request that says what was removed and why in two sentences.
 - Out of scope for the capstone: the Watch, TV and Widgets targets; Mac Catalyst and iPad; the
-  CarPlay, Siri, NFC, critical-alert, WeatherKit and associated-domain entitlements. They are
-  removed or being removed; do not extend them or add them back.
+  CarPlay, Siri, NFC, critical-alert, WeatherKit, associated-domain, communication-notification
+  and custom-protocol entitlements. They are removed; do not extend them or add them back.
+- MaroonNet's own code lives in `Meshtastic/MaroonNet/`. Where a Meshtastic file has to change,
+  mark the change with a `// MaroonNet:` comment so it is easy to find and keep.
+- Signing: the committed `Config/Signing.xcconfig` holds the team and bundle ID. Each developer
+  signs local test builds with their own Personal Team in a git-ignored
+  `Config/Signing.local.xcconfig`; never commit that file. Corey uploads TestFlight builds.
 - `Meshtastic.xcodeproj` is generated from `project.yml` by XcodeGen (version pinned in
   `.xcodegen-version`; see `CONTRIBUTING.md`) and is committed. Change `project.yml`,
   regenerate, commit both; never hand-edit the project file. Open `Meshtastic.xcworkspace`.
