@@ -468,7 +468,8 @@ struct MeshMapMK: View {
 	@ViewBuilder private var mapWithSheets: some View {
 		meshClusterMapView
 			.ignoresSafeArea()
-			.overlay(alignment: .top) { traceRouteBanner }
+			// MaroonNet: the Inside / Outside banner sits under the trace-route banner.
+			.overlay(alignment: .top) { VStack(spacing: 8) { traceRouteBanner; AssignmentBanner() } }
 			.onChange(of: accessoryManager.isHighMeshTraffic) { _, isHigh in
 				// Traffic has been high for a sustained window (the monitor debounces this) — stop an
 				// in-flight flyover so it doesn't grind. The play button's disable + start guard keep it
@@ -1283,6 +1284,8 @@ struct MeshMapMK: View {
 									result += geoJSONOverlays
 									result += geofenceOverlays
 									result += terrainOverlays
+									// MaroonNet: the current search assignment, drawn as a maroon area.
+									result += AssignmentMapContent.overlays(for: AssignmentStore.shared.current)
 									return result
 								}
 
