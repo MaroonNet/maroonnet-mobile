@@ -1023,6 +1023,12 @@ class AccessoryManager: ObservableObject, MqttClientProxyManagerDelegate {
 					Logger.mesh.info("[Zero Positioning System] packet received from \(packet.from.toHex(), privacy: .public)")
 				case .privateApp:
 					Logger.mesh.info("[Private] packet received from \(packet.from.toHex(), privacy: .public)")
+                    // MaroonNet: a port-256 payload may be a search assignment (packet record v1.2).
+                    // Anything that is not a valid assignment is ignored.
+                    if let assignment = AssignmentPacket.decode(data.payload) {
+                        let stored = await MainActor.run { AssignmentStore.shared.receive(assignment) }
+                        Logger.mesh.info("[MaroonNet] Assignment \(assignment.id, privacy: .public) \"\(assignment.name, privacy: .public)\" from \(packet.from.toHex(), privacy: .public), stored: \(stored, privacy: .public)")
+                    }
 				case .atakForwarder:
 					handleATAKForwarderPacket(packet)
 				case .simulatorApp:
