@@ -2,7 +2,7 @@ import CoreLocation
 import Foundation
 
 /// MaroonNet assignment packet, byte layout version 1.
-/// Contract: MaroonNet Assignment Packet decision record v1.1, Section 3.
+/// Contract: MaroonNet Assignment Packet decision record v1.2, Section 3.
 /// Arrives as the payload of a Meshtastic packet on port 256 (PRIVATE_APP).
 /// All multi-byte numbers are little-endian.
 ///
@@ -12,7 +12,7 @@ import Foundation
 /// | 2       | 1     | Version, 1                                         |
 /// | 3       | 1     | Message type, 1 = assignment                       |
 /// | 4       | 2     | Assignment ID, UInt16                              |
-/// | 6       | 1     | Corner count n, 3 to 5                             |
+/// | 6       | 1     | Corner count n, 3 to 24                           |
 /// | 7       | 1     | Name length k, 0 to 20                             |
 /// | 8       | 8 x n | Corners: Int32 latitude, Int32 longitude, deg x 1e7 |
 /// | 8 + 8n  | k     | Name, UTF-8                                        |
@@ -22,7 +22,7 @@ enum AssignmentPacket {
 	static let typeAssignment: UInt8 = 1
 	static let headerSize = 8
 	static let cornerSize = 8
-	static let cornerCounts = 3...5
+    static let cornerCounts = Assignment.allowedCornerCounts
 	static let maxNameLength = 20
 
 	/// Reads a port-256 payload into an assignment.
