@@ -53,6 +53,14 @@ struct AssignmentPacketTests {
 	static let square: [(Double, Double)] = [(0, 0), (0, 1), (1, 1), (1, 0)]
 	static let pentagon: [(Double, Double)] = [(0, 0), (0, 1), (1, 1), (1.5, 0.5), (1, 0)]
 
+	/// n corners evenly spaced on a small circle near Denver.
+	static func polygon(_ n: Int) -> [(Double, Double)] {
+		(0..<n).map { i in
+			let angle = Double(i) * 2 * .pi / Double(n)
+			return (39.74 + 0.01 * sin(angle), -104.99 + 0.01 * cos(angle))
+		}
+	}
+
 	// MARK: - The shared example
 
 	@Test func exampleIs49Bytes() {
@@ -82,9 +90,17 @@ struct AssignmentPacketTests {
 
 	// MARK: - Accepted
 
-	@Test func acceptsThreeAndFiveCorners() {
+	@Test func acceptsThreeTo24Corners() {
 		#expect(Self.decode(Self.packet(corners: Self.triangle))?.corners.count == 3)
 		#expect(Self.decode(Self.packet(corners: Self.pentagon))?.corners.count == 5)
+		#expect(Self.decode(Self.packet(corners: Self.polygon(24)))?.corners.count == 24)
+	}
+
+	@Test func largestPacketIs220Bytes() {
+		let name = String(repeating: "A", count: 20)
+		let largest = Self.packet(corners: Self.polygon(24), name: name)
+		#expect(largest.count == 220)
+		#expect(Self.decode(largest)?.corners.count == 24)
 	}
 
 	@Test func readsTheIDLittleEndian() {
@@ -122,11 +138,10 @@ struct AssignmentPacketTests {
 		#expect(Self.decode(Self.packet(corners: Self.square, type: 2)) == nil)
 	}
 
-	@Test func ignoresTwoOrSixCorners() {
+	@Test func ignoresTwoOr25Corners() {
 		let two: [(Double, Double)] = [(0, 0), (1, 1)]
-		let six = Self.pentagon + [(0.5, -0.5)]
 		#expect(Self.decode(Self.packet(corners: two)) == nil)
-		#expect(Self.decode(Self.packet(corners: six)) == nil)
+		#expect(Self.decode(Self.packet(corners: Self.polygon(25))) == nil)
 	}
 
 	@Test func ignores21ByteName() {
