@@ -49,9 +49,12 @@ struct AssignmentPacketTests {
 		AssignmentPacket.decode(Data(bytes))
 	}
 
-	static let triangle: [(Double, Double)] = [(0, 0), (0, 1), (1, 0)]
-	static let square: [(Double, Double)] = [(0, 0), (0, 1), (1, 1), (1, 0)]
-	static let pentagon: [(Double, Double)] = [(0, 0), (0, 1), (1, 1), (1.5, 0.5), (1, 0)]
+	// Small shapes near Denver. None has a (0, 0) corner, which the decoder rejects.
+	static let triangle: [(Double, Double)] = [(39.70, -105.00), (39.70, -104.99), (39.71, -105.00)]
+	static let square: [(Double, Double)] = [(39.70, -105.00), (39.70, -104.99), (39.71, -104.99), (39.71, -105.00)]
+	static let pentagon: [(Double, Double)] = [
+		(39.70, -105.00), (39.70, -104.99), (39.71, -104.99), (39.715, -104.995), (39.71, -105.00),
+	]
 
 	/// n corners evenly spaced on a small circle near Denver.
 	static func polygon(_ n: Int) -> [(Double, Double)] {
@@ -152,6 +155,19 @@ struct AssignmentPacketTests {
 	@Test func ignoresWrongLength() {
 		#expect(Self.decode(Array(Self.example.dropLast())) == nil)
 		#expect(Self.decode(Self.example + [0x00]) == nil)
+	}
+
+	@Test func ignoresAZeroZeroCorner() {
+		// (0, 0) is what software sends when a position is missing (record v1.3).
+		var corners = Self.square
+		corners[2] = (0, 0)
+		#expect(Self.decode(Self.packet(corners: corners)) == nil)
+	}
+
+	@Test func acceptsZeroLatitudeOrLongitudeAlone() {
+		// Only both zero together is rejected; a corner on the equator or the prime meridian is real.
+		let nearNullIsland: [(Double, Double)] = [(0, 10), (10, 0), (10, 10)]
+		#expect(Self.decode(Self.packet(corners: nearNullIsland))?.corners.count == 3)
 	}
 
 	@Test func ignoresEmptyAndHeaderOnlyPayloads() {
