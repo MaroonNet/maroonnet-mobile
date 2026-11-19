@@ -2,8 +2,9 @@
 //  SectorGeometry.swift
 //  MaroonNet Field
 //
-//  MaroonNet: geometry for search sectors. A sector arrives as 4–5 corner points;
-//  the phone decides by itself whether the searcher is inside it.
+//  MaroonNet: geometry for search sectors. A sector is a polygon of 3 or more corners
+//  (assignments allow 3–24, packet record v1.2); the phone decides by itself whether
+//  the searcher is inside it.
 //
 
 import CoreLocation
@@ -14,6 +15,11 @@ enum SectorGeometry {
 	///
 	/// Corners are listed in order around the edge (either direction); the last corner
 	/// connects back to the first. Fewer than 3 corners is not an area, so the answer is false.
+	/// There is no upper limit here; `Assignment` limits sectors to 3–24 corners.
+	///
+	/// Trusts its input: corners out of order, or a stray corner such as (0, 0), describe a
+	/// different shape and give a different answer. Bad corners are kept out before this point,
+	/// by the packet rules (record Section 3) and the decoder.
 	///
 	/// Ray casting: from the point, look along a line to the east and count how many polygon
 	/// edges it crosses. Odd means inside, even means outside. Latitude and longitude are
