@@ -19,8 +19,11 @@ struct Assignment: Identifiable {
 	let receivedAt: Date
 
 	/// True when the corners describe an area MaroonNet accepts (3 to 5 points).
-	var isValid: Bool {
-		(3...5).contains(corners.count)
+    /// Corner counts allowed for a sector (packet record v1.2, Section 3).
+    static let allowedCornerCounts = 3...24
+
+    var isValid: Bool {
+        Self.allowedCornerCounts.contains(corners.count)
 	}
 
 	/// True when `position` is inside this assignment's area.
